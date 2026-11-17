@@ -1,4 +1,4 @@
-"""实时决策接口：维护决策规则，覆盖提交规则评审、生效规则、暂停规则等动作。"""
+"""实时决策接口：维护决策规则，覆盖评审、生效、暂停、归档、恢复与变更切换留痕。"""
 from __future__ import annotations
 
 from typing import Any
@@ -13,21 +13,28 @@ router = APIRouter(prefix="/api/realtime", tags=["实时决策"])
 service = RealtimeService()
 
 LIST_FIELDS = ["规则编号", "触发事件", "决策条件", "执行动作", "冷却时间秒", "优先级", "分流比例", "生效时段"]
-STATUSES = ["草稿", "规则评审中", "已生效", "已暂停"]
+STATUSES = ["草稿", "规则评审中", "已生效", "已暂停", "已归档"]
 
 
 @router.get("", response_model=PageResult[dict])
 def list_entries(
     keyword: str | None = Query(default=None, description="按规则编号检索"),
-    status: str | None = Query(default=None, description="草稿、规则评审中、已生效、已暂停"),
+    status: str | None = Query(default=None, description="草稿、规则评审中、已生效、已暂停、已归档"),
     page: int = 1,
     size: int = 20,
 ) -> PageResult[dict]:
-    """按规则编号与状态过滤实时决策列表；没有数据时返回空页，不报错。"""
+    """按规则编号与状态过滤实时决策列表；列表由实时决策结果（发送动作）驱动汇总。"""
     if size > 200:
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出实时决策清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "realtime", "total": total, "items": items}
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -48,9 +55,18 @@ def create_entry(payload: EntryPayload) -> ActionResult:
     return ActionResult(ok=True, message="决策规则已登记", entry=entry)
 
 
+@router.put("/{entry_id}", response_model=ActionResult)
+def update_entry(entry_id: int, payload: EntryPayload) -> ActionResult:
+    """变更切换：仅草稿/已暂停可改，版本号递增并写留痕。"""
+    entry, message = service.update_entry(entry_id, payload.values)
+    if entry is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=entry)
+
+
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条决策规则执行提交规则评审、生效规则、暂停规则；不允许的动作会被拦下并说明原因。"""
+    """对单条决策规则执行评审、生效、暂停、归档、恢复；不允许的动作会被拦下并说明原因。"""
     action = str(payload.values.get("action") or "").strip()
     entry, message = service.run_action(entry_id, action)
     if entry is None:
@@ -58,8 +74,10 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     return ActionResult(ok=True, message=message, entry=entry)
 
 
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出实时决策清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "realtime", "total": total, "items": items}
+@router.get("/{entry_id}/audit-logs")
+def audit_logs(entry_id: int) -> dict[str, Any]:
+    """回看该规则的生命周期留痕（变更切换、归档与恢复）。"""
+    logs, message = service.list_audit_logs(entry_id)
+    if logs is None:
+        raise HTTPException(status_code=404, detail=message)
+    return {"items": logs, "total": len(logs)}

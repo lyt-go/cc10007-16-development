@@ -1,4 +1,4 @@
-"""推送计划接口：维护推送方案，覆盖提交方案审批、启动推送、撤回推送等动作。"""
+"""推送计划接口：维护推送方案，覆盖审批、启动、撤回与预演待处理明细回看。"""
 from __future__ import annotations
 
 from typing import Any
@@ -23,11 +23,18 @@ def list_entries(
     page: int = 1,
     size: int = 20,
 ) -> PageResult[dict]:
-    """按方案编号与状态过滤推送计划列表；没有数据时返回空页，不报错。"""
+    """按方案编号与状态过滤推送计划列表，并回看关联预演批次与触达结果。"""
     if size > 200:
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出推送计划清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "pushplan", "total": total, "items": items}
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -37,6 +44,15 @@ def get_entry(entry_id: int) -> dict:
     if entry is None:
         raise HTTPException(status_code=404, detail=f"推送方案 {entry_id} 不存在或已归档")
     return entry
+
+
+@router.get("/{entry_id}/pending-detail")
+def get_pending_detail(entry_id: int) -> dict[str, Any]:
+    """推送计划待处理明细：保存的推送预演名单明细数据集、决策动作与触达结果。"""
+    detail, message = service.get_pending_detail(entry_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=message)
+    return detail
 
 
 @router.post("", response_model=ActionResult)
@@ -56,10 +72,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出推送计划清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "pushplan", "total": total, "items": items}
